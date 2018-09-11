@@ -17,11 +17,8 @@ import tensorflow as tf
 import numpy as np
 from numpy.testing import assert_allclose
 import pytest
-<<<<<<< HEAD
 from gpflow.test_util import session_tf
 from gpflow.features import InducingPoints
-=======
->>>>>>> 2475891ff44b13bb5f10b91fb050f11778620109
 
 import gpflow
 from gpflow.test_util import session_tf
