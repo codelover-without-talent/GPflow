@@ -17,8 +17,11 @@ import tensorflow as tf
 import numpy as np
 from numpy.testing import assert_allclose
 import pytest
+<<<<<<< HEAD
 from gpflow.test_util import session_tf
 from gpflow.features import InducingPoints
+=======
+>>>>>>> 2475891ff44b13bb5f10b91fb050f11778620109
 
 import gpflow
 from gpflow.test_util import session_tf
@@ -99,7 +102,6 @@ def test_rbf_indices_active_dims(session_tf):
 @pytest.mark.parametrize("Kern", Kerns)
 def test_all_no_active_dims(session_tf, Kern):
     _test_no_active_dims(Kern, session_tf)
-
 
 def _test_conditional(sess, white=False, use_q_sqrt=True, full_cov=True):
     S, N, M, Dx, Dy = 6, 5, 4, 3, 2

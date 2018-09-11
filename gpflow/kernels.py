@@ -54,7 +54,7 @@ class Kernel(Parameterized):
         elif isinstance(active_dims, slice):
             self.active_dims = active_dims
             if active_dims.start is not None and active_dims.stop is not None and active_dims.step is not None:
-                assert len(range(*active_dims)) == input_dim  # pragma: no cover
+                assert len(range(active_dims.start, active_dims.stop, active_dims.step)) == input_dim  # pragma: no cover
         else:
             self.active_dims = np.array(active_dims, dtype=np.int32)
             assert len(active_dims) == input_dim
@@ -262,22 +262,8 @@ class Stationary(Kernel):
                                       dtype=settings.float_type)
 
 
-    def square_dist(self, X, X2):  # pragma: no cover
-        warnings.warn('square_dist is deprecated and will be removed at '
-                      'GPflow version 1.2.0. Use scaled_square_dist.',
-                      DeprecationWarning)
-        return self.scaled_square_dist(X, X2)
-
-
-    def euclid_dist(self, X, X2):  # pragma: no cover
-        warnings.warn('euclid_dist is deprecated and will be removed at '
-                      'GPflow version 1.2.0. Use scaled_euclid_dist.',
-                      DeprecationWarning)
-        return self.scaled_euclid_dist(X, X2)
-
-
     @params_as_tensors
-    def scaled_square_dist(self, X, X2):
+    def _scaled_square_dist(self, X, X2):
         """
         Returns ((X - X2ᵀ)/lengthscales)².
         Due to the implementation and floating-point imprecision, the
@@ -299,32 +285,72 @@ class Stationary(Kernel):
         return dist
 
 
-    def scaled_euclid_dist(self, X, X2):
+    @staticmethod
+    def _clipped_sqrt(r2):
+        # Clipping around the (single) float precision which is ~1e-45.
+        return tf.sqrt(tf.maximum(r2, 1e-40))
+
+    def scaled_square_dist(self, X, X2):  # pragma: no cover
+        return self._scaled_square_dist(X, X2)
+
+    def scaled_euclid_dist(self, X, X2):  # pragma: no cover
         """
         Returns |(X - X2ᵀ)/lengthscales| (L2-norm).
         """
+        warnings.warn('scaled_euclid_dist is deprecated and will be removed '
+                      'in GPflow version 1.4.0. For stationary kernels, '
+                      'define K_r(r) instead.',
+                      DeprecationWarning)
         r2 = self.scaled_square_dist(X, X2)
-        # Clipping around the (single) float precision which is ~1e-45.
-        return tf.sqrt(tf.maximum(r2, 1e-40))
+        return self._clipped_sqrt(r2)
 
 
     @params_as_tensors
     def Kdiag(self, X, presliced=False):
         return tf.fill(tf.shape(X)[:-1], tf.squeeze(self.variance))
 
+    @params_as_tensors
+    def K(self, X, X2=None, presliced=False):
+        """
+        Calculates the kernel matrix K(X, X2) (or K(X, X) if X2 is None).
+        Handles the slicing as well as scaling and computes k(x, x') = k(r),
+        where r² = ((x - x')/lengthscales)².
+        Internally, this calls self.K_r2(r²), which in turn computes the
+        square-root and calls self.K_r(r). Classes implementing stationary
+        kernels can either overwrite `K_r2(r2)` if they only depend on the
+        squared distance, or `K_r(r)` if they need the actual radial distance.
+        """
+        if not presliced:
+            X, X2 = self._slice(X, X2)
+        return self.K_r2(self.scaled_square_dist(X, X2))
 
-class RBF(Stationary):
+    @params_as_tensors
+    def K_r(self, r):
+        """
+        Returns the kernel evaluated on `r`, which is the scaled Euclidean distance
+        Should operate element-wise on r
+        """
+        raise NotImplementedError
+
+    def K_r2(self, r2):
+        """
+        Returns the kernel evaluated on `r2`, which is the scaled squared distance.
+        Will call self.K_r(r=sqrt(r2)), or can be overwritten directly (and should operate element-wise on r2).
+        """
+        r = self._clipped_sqrt(r2)
+        return self.K_r(r)
+
+
+class SquaredExponential(Stationary):
     """
     The radial basis function (RBF) or squared exponential kernel
     """
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        return self.variance * tf.exp(-self.scaled_square_dist(X, X2) / 2)
+    def K_r2(self, r2):
+        return self.variance * tf.exp(-r2 / 2.)
 
-SquaredExponential = RBF
+RBF = SquaredExponential
 
 
 class RationalQuadratic(Stationary):
@@ -347,11 +373,8 @@ class RationalQuadratic(Stationary):
                                dtype=settings.float_type)
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        return self.variance * (1 + self.scaled_square_dist(X, X2) /
-                                (2 * self.alpha)) ** (- self.alpha)
+    def K_r2(self, r2):
+        return self.variance * (1 + r2 / (2 * self.alpha)) ** (- self.alpha)
 
 
 class Linear(Kernel):
@@ -430,10 +453,7 @@ class Exponential(Stationary):
     """
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        r = self.scaled_euclid_dist(X, X2)
+    def K_r(self, r):
         return self.variance * tf.exp(-0.5 * r)
 
 
@@ -443,10 +463,7 @@ class Matern12(Stationary):
     """
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        r = self.scaled_euclid_dist(X, X2)
+    def K_r(self, r):
         return self.variance * tf.exp(-r)
 
 
@@ -456,12 +473,9 @@ class Matern32(Stationary):
     """
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        r = self.scaled_euclid_dist(X, X2)
-        return self.variance * (1. + np.sqrt(3.) * r) * \
-               tf.exp(-np.sqrt(3.) * r)
+    def K_r(self, r):
+        sqrt3 = np.sqrt(3.)
+        return self.variance * (1. + sqrt3 * r) * tf.exp(-sqrt3 * r)
 
 
 class Matern52(Stationary):
@@ -470,12 +484,9 @@ class Matern52(Stationary):
     """
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        r = self.scaled_euclid_dist(X, X2)
-        return self.variance * (1.0 + np.sqrt(5.) * r + 5. / 3. * tf.square(r)) \
-               * tf.exp(-np.sqrt(5.) * r)
+    def K_r(self, r):
+        sqrt5 = np.sqrt(5.)
+        return self.variance * (1.0 + sqrt5 * r + 5. / 3. * tf.square(r)) * tf.exp(-sqrt5 * r)
 
 
 class Cosine(Stationary):
@@ -484,10 +495,7 @@ class Cosine(Stationary):
     """
 
     @params_as_tensors
-    def K(self, X, X2=None, presliced=False):
-        if not presliced:
-            X, X2 = self._slice(X, X2)
-        r = self.scaled_euclid_dist(X, X2)
+    def K_r(self, r):
         return self.variance * tf.cos(r)
 
 
